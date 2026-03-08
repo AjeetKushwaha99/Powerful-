@@ -1,27 +1,33 @@
+import os
 import asyncio
 import string
 import random
 from datetime import datetime, timezone
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
-from pyrogram.errors import FloodWait, UserIsBlocked, InputUserDeactivated, PeerIdInvalid
+from pyrogram.errors import FloodWait, UserIsBlocked, InputUserDeactivated
 from pymongo import MongoClient
+from aiohttp import web  # 🔥 Smart Redirector Library
 
 # ==========================================
 # ⚙️ CONFIGURATION
 # ==========================================
-API_ID = 37067823
-API_HASH = "ed9e62ed4538d2d2b835fb54529c358f"
+API_ID = 12345678
+API_HASH = "your_api_hash_here"
+ADMIN_BOT_TOKEN = "your_admin_bot_token"
 
-ADMIN_BOT_TOKEN = "8596951434:AAF98nta7kfLKqeR9ImT5pUCTZoZ1rLFOwI"
-USER_BOT_PRIMARY_USERNAME = "Filling4You_bot"
-USER_BOT_BACKUP_USERNAME = "FiLing4YoU_bot"
+USER_BOT_PRIMARY_USERNAME = "YourPrimaryBot" # @ ke bina
+USER_BOT_BACKUP_USERNAME = "YourBackupBot"   # @ ke bina
 
-CHANNEL_ID = -1003777551559
-OWNER_ID = 6549083920
+CHANNEL_ID = -1001234567890
+OWNER_ID = 1234567890
 
-# MongoDB Connection (Optimized for High Traffic)
-MONGO_URL = "mongodb+srv://Ajeet:XgGFRFWVT2NwWipw@cluster0.3lxz0p7.mongodb.net/?appName=Cluster0"
+# MongoDB Connection
+MONGO_URL = "mongodb+srv://..."
+
+# 🔥 YOUR RAILWAY DOMAIN URL (MANDATORY)
+# Railway settings se domain generate karein aur yahan daalein (Bina last slash '/')
+WEB_URL = os.environ.get("WEB_URL", "https://aapka-app.up.railway.app")
 
 # ==========================================
 # 🗄️ DATABASE CONNECTION
@@ -37,27 +43,53 @@ if stats_col.find_one({"_id": "bot_stats"}) is None:
     stats_col.insert_one({"_id": "bot_stats", "total_clicks": 0, "active_bot": "primary"})
 
 # ==========================================
-# 🤖 BOT INITIALIZATION
+# 🌐 SMART WEB REDIRECTOR
+# ==========================================
+async def redirect_to_bot(request):
+    """
+    Jab user link par click karega, yeh function active bot check karega 
+    aur user ko automatically wahan bhej dega.
+    """
+    file_code = request.match_info.get('file_code')
+    if not file_code:
+        return web.Response(text="❌ Invalid Link!", status=400)
+
+    # Active bot check karo
+    stats = stats_col.find_one({"_id": "bot_stats"})
+    active_mode = stats.get("active_bot", "primary") if stats else "primary"
+    active_username = USER_BOT_PRIMARY_USERNAME if active_mode == "primary" else USER_BOT_BACKUP_USERNAME
+
+    # Telegram par bhej do
+    tg_url = f"https://t.me/{active_username}?start={file_code}"
+    raise web.HTTPFound(tg_url)
+
+async def start_web_server():
+    app_web = web.Application()
+    app_web.router.add_get('/{file_code}', redirect_to_bot)
+    runner = web.AppRunner(app_web)
+    await runner.setup()
+    
+    port = int(os.environ.get("PORT", 8080)) # Railway auto-assigns PORT
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"🌐 Smart Redirector Server running on port {port}")
+
+# ==========================================
+# 🤖 ADMIN BOT COMMANDS
 # ==========================================
 app = Client("admin_bot", api_id=API_ID, api_hash=API_HASH, bot_token=ADMIN_BOT_TOKEN)
 
 def generate_file_code(length=8):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
-def get_active_bot_username():
-    stats = stats_col.find_one({"_id": "bot_stats"})
-    if stats and stats.get("active_bot") == "backup":
-        return USER_BOT_BACKUP_USERNAME
-    return USER_BOT_PRIMARY_USERNAME
-
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message: Message):
     if message.from_user.id != OWNER_ID: return
-    await message.reply("🤖 **Premium Admin Panel**\n\nSend me any file/video to upload and generate a secure link.\n\nCommands:\n/stats - View analytics\n/switch - Switch Primary/Backup bot\n/broadcast - Message all users")
+    await message.reply("🤖 **Premium Admin Panel (Ban-Proof)**\n\nSend me any file/video to upload. I will generate a Smart Web Link.\n\nCommands:\n/stats - Analytics\n/switch - Switch Bot\n/broadcast - Message Users")
 
 @app.on_message(filters.private & (filters.video | filters.document | filters.audio | filters.photo) & filters.user(OWNER_ID))
 async def upload_file(client, message: Message):
-    msg = await message.reply("⏳ **Uploading to encrypted storage...**")
+    msg = await message.reply("⏳ **Uploading and generating Smart Link...**")
     try:
         forwarded = await message.copy(CHANNEL_ID)
         
@@ -77,12 +109,12 @@ async def upload_file(client, message: Message):
             "clicks": 0
         })
 
-        active_bot = get_active_bot_username()
-        share_link = f"https://t.me/{active_bot}?start={file_code}"
+        # 🔥 Generate Smart Link instead of Telegram Link
+        smart_link = f"{WEB_URL}/{file_code}"
         
         await msg.edit_text(
-            f"✅ **Upload Complete!**\n\n📁 **Name:** `{file_name}`\n🔑 **Code:** `{file_code}`\n\n🔗 **Link:**\n`{share_link}`",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Open Link", url=share_link)]])
+            f"✅ **Upload Complete!**\n\n📁 **Name:** `{file_name}`\n\n🔗 **Smart Link (Share this):**\n`{smart_link}`",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Open Link", url=smart_link)]])
         )
     except Exception as e:
         await msg.edit_text(f"❌ Upload Failed: {e}")
@@ -94,7 +126,7 @@ async def switch_bot(client, message: Message):
     new_mode = "backup" if current == "primary" else "primary"
     
     stats_col.update_one({"_id": "bot_stats"}, {"$set": {"active_bot": new_mode}}, upsert=True)
-    await message.reply(f"🔄 **Bot Switched!**\n\nNow generating links for: **{new_mode.upper()}**")
+    await message.reply(f"🔄 **Bot Switched!**\n\nSmart links will now automatically redirect users to: **{new_mode.upper()}**")
 
 @app.on_message(filters.command("stats") & filters.user(OWNER_ID))
 async def show_stats(client, message: Message):
@@ -108,10 +140,8 @@ async def show_stats(client, message: Message):
 async def broadcast(client, message: Message):
     if not message.reply_to_message:
         return await message.reply("⚠️ Reply to a message with /broadcast")
-        
     msg = await message.reply("📢 **Broadcasting...**")
     users = users_col.find({}, {"user_id": 1})
-    
     success, failed, blocked = 0, 0, 0
     for user in users:
         try:
@@ -127,9 +157,19 @@ async def broadcast(client, message: Message):
             users_col.delete_one({"user_id": user["user_id"]})
         except Exception:
             failed += 1
-            
     await msg.edit_text(f"✅ **Broadcast Done!**\n\n✔️ Sent: {success}\n🚫 Blocked/Deleted: {blocked}\n❌ Failed: {failed}")
 
+# ==========================================
+# 🚀 APP LAUNCHER
+# ==========================================
+async def main():
+    print("🚀 Starting Smart Redirector and Admin Bot...")
+    await start_web_server()
+    await app.start()
+    import pyrogram
+    await pyrogram.idle()
+
 if __name__ == "__main__":
-    print("🚀 Enhanced Admin Bot Started...")
-    app.run()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
+
