@@ -20,7 +20,7 @@ USER_BOT_PRIMARY_USERNAME = "Filling4You_bot"
 USER_BOT_BACKUP_USERNAME = "FiLing4YoU_bot"
 
 CHANNEL_ID = -1003777551559
-OWNER_ID = 6549083920
+OWNER_ID = 6353210726
 
 # MongoDB Connection
 MONGO_URL = "mongodb+srv://Ajeet:XgGFRFWVT2NwWipw@cluster0.3lxz0p7.mongodb.net/?appName=Cluster0"
