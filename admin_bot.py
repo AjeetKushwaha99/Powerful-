@@ -81,11 +81,9 @@ async def start_cmd(client, message: Message):
     if message.from_user.id != OWNER_ID: 
         return await message.reply("❌ **Access Denied!** You are not the owner.")
     
-    # Check current active bot
     stats = stats_col.find_one({"_id": "bot_stats"})
     active_mode = stats.get("active_bot", "primary") if stats else "primary"
     
-    # Create Switch Button
     btn = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"🔄 Switch Bot (Current: {active_mode.upper()})", callback_data="switch_bot_btn")]
     ])
@@ -108,10 +106,8 @@ async def switch_btn_click(client, query):
     current = stats.get("active_bot", "primary") if stats else "primary"
     new_mode = "backup" if current == "primary" else "primary"
     
-    # Update DB
     stats_col.update_one({"_id": "bot_stats"}, {"$set": {"active_bot": new_mode}}, upsert=True)
     
-    # Update Button Text
     btn = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"🔄 Switch Bot (Current: {new_mode.upper()})", callback_data="switch_bot_btn")]
     ])
@@ -150,7 +146,7 @@ async def upload_file(client, message: Message):
     except Exception as e:
         await msg.edit_text(f"❌ Upload Failed: {e}")
 
-# --- OLD SWITCH COMMAND (Also kept just in case) ---
+# --- OLD SWITCH COMMAND ---
 @app.on_message(filters.command("switch") & filters.user(OWNER_ID))
 async def switch_bot_cmd(client, message: Message):
     stats = stats_col.find_one({"_id": "bot_stats"})
@@ -198,7 +194,6 @@ async def broadcast(client, message: Message):
 async def main():
     print("🚀 Starting Smart Redirector and Admin Bot...")
     
-    # Setup Telegram Commands Menu Automatically
     await app.start()
     try:
         await app.set_bot_commands([
