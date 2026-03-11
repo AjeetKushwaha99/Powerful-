@@ -74,7 +74,47 @@ def generate_vplink(actual_link):
         return actual_link
 
 # ==========================================
-# 📩 HANDLERS
+# 🔥 FIXED: FRESH USER DATA HELPER
+# ==========================================
+def get_fresh_user(user_id):
+    """Hamesha DB se fresh data laao - kabhi stale data use mat karo"""
+    now = datetime.now(timezone.utc)
+    user_data = users_col.find_one({"user_id": user_id})
+    if not user_data:
+        user_data = {
+            "user_id": user_id,
+            "videos_today": 0,
+            "last_watch": now,
+            "adult_accepted": False
+        }
+        users_col.insert_one(user_data)
+    
+    # Reset daily quota if new day
+    last_watch = user_data.get("last_watch", now)
+    if hasattr(last_watch, 'date') and last_watch.date() < now.date():
+        users_col.update_one({"user_id": user_id}, {"$set": {"videos_today": 0, "last_watch": now}})
+        user_data["videos_today"] = 0
+        user_data["last_watch"] = now
+    
+    return user_data
+
+# ==========================================
+# 🔥 FIXED: CHECK VERIFICATION HELPER
+# ==========================================
+def is_user_verified(user_id):
+    """Check if user has valid verification"""
+    now = datetime.now(timezone.utc)
+    verif = verifications_col.find_one({"user_id": user_id})
+    if verif and verif.get("expires_at"):
+        expires = verif["expires_at"]
+        if hasattr(expires, 'tzinfo') and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires > now:
+            return True
+    return False
+
+# ==========================================
+# 📩 FIXED START HANDLER
 # ==========================================
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client: Client, message: Message):
@@ -82,102 +122,167 @@ async def start_cmd(client: Client, message: Message):
     payload = message.command[1] if len(message.command) > 1 else None
     now = datetime.now(timezone.utc)
 
-    user_data = users_col.find_one({"user_id": user_id})
-    if not user_data:
-        user_data = {"user_id": user_id, "videos_today": 0, "last_watch": now, "adult_accepted": False}
-        users_col.insert_one(user_data)
+    # 🔥 FIX 1: Always get fresh user data
+    user_data = get_fresh_user(user_id)
 
-    if user_data.get("last_watch", now).date() < now.date():
-        users_col.update_one({"user_id": user_id}, {"$set": {"videos_today": 0}})
-        user_data["videos_today"] = 0
-
+    # No payload = just welcome
     if not payload:
-        return await message.reply("👋 Welcome to the File Bot!\nSend a valid link to get started.")
+        return await message.reply(
+            "👋 **Welcome to the File Bot!**\n\nSend a valid link to get started.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📢 Join Channel", url=HELP_CHANNEL)]
+            ])
+        )
+
+    # 🔥 FIX 2: Handle Verification FIRST and SEPARATELY
+    is_verified_now = False
+    original_file_code = payload
 
     if payload.startswith("verify_"):
-        file_code = payload.replace("verify_", "")
+        original_file_code = payload.replace("verify_", "")
+        
+        # Save verification in DB
         verifications_col.update_one(
             {"user_id": user_id},
             {"$set": {"expires_at": now + timedelta(hours=VERIFICATION_HOURS)}},
             upsert=True
         )
-        await message.reply("✅ **Verification Successful!**\nYou have unlimited access.")
-        payload = file_code
+        
+        # Reset daily count after verification
+        users_col.update_one(
+            {"user_id": user_id},
+            {"$set": {"videos_today": 0}}
+        )
+        
+        await message.reply(
+            f"✅ **Verification Successful!**\n\n"
+            f"🎉 You now have **{VERIFICATION_HOURS} hours** unlimited access!\n"
+            f"⏳ Fetching your file..."
+        )
+        is_verified_now = True
+        
+        # 🔥 FIX 3: Refresh user data AFTER verification
+        user_data = get_fresh_user(user_id)
 
+    # 🔥 FIX 4: Adult check - but don't block verified users unnecessarily
     if not user_data.get("adult_accepted"):
-        users_col.update_one({"user_id": user_id}, {"$set": {"pending_file": payload}})
+        users_col.update_one({"user_id": user_id}, {"$set": {"pending_file": original_file_code}})
         return await message.reply(
-            "⚠️ **Adult Content Warning**\n\nBy clicking continue, you confirm you are 18+.",
+            "⚠️ **Adult Content Warning**\n\n"
+            "This bot contains adult content.\n"
+            "By clicking continue, you confirm you are **18+**.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✔️ Continue", callback_data="accept_adult")],
+                [InlineKeyboardButton("✔️ I am 18+ - Continue", callback_data="accept_adult")],
                 [InlineKeyboardButton("❌ Exit", callback_data="reject_adult")]
             ])
         )
 
-    await process_file_delivery(client, message, user_id, payload, user_data)
+    # 🔥 FIX 5: Deliver file with FRESH data
+    await process_file_delivery(client, message, user_id, original_file_code)
 
+# ==========================================
+# 🔥 FIXED ADULT ACCEPT HANDLER
+# ==========================================
 @app.on_callback_query(filters.regex("^accept_adult$"))
 async def accept_adult(client, query: CallbackQuery):
     user_id = query.from_user.id
-    users_col.update_one({"user_id": user_id}, {"$set": {"adult_accepted": True}})
-    await query.message.edit_text("✅ Warning accepted.")
     
-    user_data = users_col.find_one({"user_id": user_id})
+    # Update adult_accepted
+    users_col.update_one({"user_id": user_id}, {"$set": {"adult_accepted": True}})
+    await query.message.edit_text("✅ **Warning accepted!**\n\n⏳ Fetching your file...")
+    
+    # 🔥 FIX: Get FRESH user data after update
+    user_data = get_fresh_user(user_id)
     pending_file = user_data.get("pending_file")
+    
     if pending_file:
         users_col.update_one({"user_id": user_id}, {"$unset": {"pending_file": ""}})
-        await process_file_delivery(client, query.message, user_id, pending_file, user_data)
+        await process_file_delivery(client, query.message, user_id, pending_file)
+    else:
+        await query.message.reply("👋 Send a valid file link to get started!")
 
 @app.on_callback_query(filters.regex("^reject_adult$"))
 async def reject_adult(client, query: CallbackQuery):
-    await query.message.edit_text("❌ You have exited.")
+    await query.message.edit_text("❌ You have exited. You cannot use this bot.")
 
-async def process_file_delivery(client, message, user_id, file_code, user_data):
+# ==========================================
+# 🔥 FIXED FILE DELIVERY FUNCTION
+# ==========================================
+async def process_file_delivery(client, message, user_id, file_code):
     now = datetime.now(timezone.utc)
+    
+    # 🔥 FIX: Always get FRESH data at delivery time
+    user_data = get_fresh_user(user_id)
+    
+    # Check if file exists
     file_data = files_col.find_one({"file_code": file_code})
     if not file_data:
-        return await message.reply("❌ Invalid File Code.")
+        return await message.reply(
+            "❌ **Invalid or Expired File Code.**\n\nPlease check your link and try again."
+        )
 
-    is_verified = False
-    verif = verifications_col.find_one({"user_id": user_id})
-    if verif and verif.get("expires_at", now) > now:
-        is_verified = True
+    # 🔥 FIX: Check verification with helper function
+    verified = is_user_verified(user_id)
 
-    if user_data.get("videos_today", 0) >= FREE_DAILY_LIMIT and not is_verified:
+    # Check limits only if NOT verified
+    if not verified and user_data.get("videos_today", 0) >= FREE_DAILY_LIMIT:
         bot_username = (await client.get_me()).username
         verify_url = generate_vplink(f"https://t.me/{bot_username}?start=verify_{file_code}")
         return await message.reply(
-            f"🛑 **Free Limit Reached!**\nVerify for {VERIFICATION_HOURS}h unlimited access.",
+            f"🛑 **Daily Free Limit Reached!**\n\n"
+            f"You have used your **{FREE_DAILY_LIMIT} free** video today.\n\n"
+            f"✅ **Verify once** to get **{VERIFICATION_HOURS} hours** unlimited access!\n\n"
+            f"👇 Click below to verify:",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Verify Now", url=verify_url)],
+                [InlineKeyboardButton("✅ Verify Now (Free)", url=verify_url)],
                 [InlineKeyboardButton("❓ How To Verify", url=HELP_CHANNEL)]
             ])
         )
 
+    # Deliver File
     try:
         msg = await client.copy_message(
             chat_id=user_id,
             from_chat_id=CHANNEL_ID,
             message_id=file_data["message_id"],
-            caption=f"⚠️ **Will auto-delete in {AUTO_DELETE_HOURS} hours.**",
+            caption=f"📁 **Here is your file!**\n\n⚠️ Will auto-delete in **{AUTO_DELETE_HOURS} hours**.\n💾 Save/Download it quickly!",
             protect_content=True
         )
         
+        # Update all stats
         files_col.update_one({"file_code": file_code}, {"$inc": {"clicks": 1}})
         stats_col.update_one({"_id": "bot_stats"}, {"$inc": {"total_clicks": 1}})
-        users_col.update_one({"user_id": user_id}, {"$inc": {"videos_today": 1}, "$set": {"last_watch": now}})
+        users_col.update_one(
+            {"user_id": user_id},
+            {"$inc": {"videos_today": 1}, "$set": {"last_watch": now}}
+        )
 
+        # Schedule auto-delete
         pending_deletes_col.insert_one({
             "chat_id": user_id,
             "message_id": msg.id,
             "delete_at": now + timedelta(hours=AUTO_DELETE_HOURS)
         })
+
+        # Send confirmation
+        if verified:
+            await message.reply("✅ **Verified User** - Unlimited access active!")
         
     except Exception as e:
-        await message.reply("❌ Error delivering file.")
+        print(f"File delivery error for {user_id}: {e}")
+        await message.reply(
+            "❌ **Error delivering file.**\n\nPlease try again later.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Try Again", url=f"https://t.me/{(await client.get_me()).username}?start={file_code}")]
+            ])
+        )
 
+# ==========================================
+# 🚀 APP LAUNCHER
+# ==========================================
 if __name__ == "__main__":
     app.start()
+    print(f"🚀 User Bot ({BOT_MODE.upper()}) Started Successfully!")
     loop = asyncio.get_event_loop()
     loop.create_task(persistent_auto_delete_loop())
     idle()
