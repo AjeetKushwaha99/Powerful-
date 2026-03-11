@@ -23,14 +23,14 @@ CHANNEL_ID = -1003867841066
 MONGO_URL = "mongodb+srv://Ajeet:XgGFRFWVT2NwWipw@cluster0.3lxz0p7.mongodb.net/?appName=Cluster0"
 SHORTENER_API = "5cbb1b2088d2ed06d7e9feae35dc17cc033169d6"
 SHORTENER_URL = "vplink.in"
-HELP_CHANNEL = "https://t.me/watchfree4you"
+HELP_CHANNEL = "https://t.me/+fDEEztGJQIY5MGY1"
 
 VERIFICATION_HOURS = 26
 FREE_DAILY_LIMIT = 1
 AUTO_DELETE_HOURS = 2
 
 # ==========================================
-# 🗄️ DATABASE (With Pending Deletes Collection)
+# 🗄️ DATABASE
 # ==========================================
 mongo_client = MongoClient(MONGO_URL, maxPoolSize=50, serverSelectionTimeoutMS=5000)
 db = mongo_client["FileSharingPro"]
