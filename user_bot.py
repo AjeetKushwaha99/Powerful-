@@ -18,9 +18,10 @@ USER_BOT_PRIMARY_TOKEN = "8537476620:AAHf1XxjpjFGJICxNAQ4i9A06gN0Z0ephDk"
 USER_BOT_BACKUP_TOKEN = "7788869673:AAHheU98TueCNHmfOf6GERSHWEp9QwETyho"
 BOT_TOKEN = USER_BOT_PRIMARY_TOKEN if BOT_MODE == "primary" else USER_BOT_BACKUP_TOKEN
 
-# 🔥 DUAL CHANNEL SYSTEM
+# 🔥 DUAL CHANNEL - Dono channels try karega
 CHANNEL_PRIMARY = -1003777551559
 CHANNEL_BACKUP = -1003867841066
+ALL_CHANNELS = [CHANNEL_PRIMARY, CHANNEL_BACKUP]
 
 MONGO_URL = "mongodb+srv://Ajeet:XgGFRFWVT2NwWipw@cluster0.3lxz0p7.mongodb.net/?appName=Cluster0"
 SHORTENER_API = "5cbb1b2088d2ed06d7e9feae35dc17cc033169d6"
@@ -46,15 +47,14 @@ pending_deletes_col = db["pending_deletes"]
 app = Client(f"user_bot_{BOT_MODE}", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ==========================================
-# 🛡️ PERSISTENT AUTO-DELETE
+# 🛡️ AUTO-DELETE LOOP
 # ==========================================
 async def persistent_auto_delete_loop():
-    print(f"🔄 Persistent Auto-Delete System Active on {BOT_MODE.upper()}")
+    print(f"🔄 Auto-Delete System Active on {BOT_MODE.upper()}")
     while True:
         try:
             now = datetime.now(timezone.utc)
             expired_docs = pending_deletes_col.find({"delete_at": {"$lte": now}})
-            
             for doc in expired_docs:
                 try:
                     await app.delete_messages(doc["chat_id"], doc["message_id"])
@@ -128,7 +128,6 @@ async def start_cmd(client: Client, message: Message):
             ])
         )
 
-    is_verified_now = False
     original_file_code = payload
 
     if payload.startswith("verify_"):
@@ -150,7 +149,6 @@ async def start_cmd(client: Client, message: Message):
             f"🎉 You now have **{VERIFICATION_HOURS} hours** unlimited access!\n"
             f"⏳ Fetching your file..."
         )
-        is_verified_now = True
         user_data = get_fresh_user(user_id)
 
     if not user_data.get("adult_accepted"):
@@ -170,7 +168,6 @@ async def start_cmd(client: Client, message: Message):
 @app.on_callback_query(filters.regex("^accept_adult$"))
 async def accept_adult(client, query: CallbackQuery):
     user_id = query.from_user.id
-    
     users_col.update_one({"user_id": user_id}, {"$set": {"adult_accepted": True}})
     await query.message.edit_text("✅ **Warning accepted!**\n\n⏳ Fetching your file...")
     
@@ -185,14 +182,13 @@ async def accept_adult(client, query: CallbackQuery):
 
 @app.on_callback_query(filters.regex("^reject_adult$"))
 async def reject_adult(client, query: CallbackQuery):
-    await query.message.edit_text("❌ You have exited. You cannot use this bot.")
+    await query.message.edit_text("❌ You have exited.")
 
 # ==========================================
-# 🔥 DUAL CHANNEL FILE DELIVERY
+# 🔥 SMART DUAL CHANNEL FILE DELIVERY
 # ==========================================
 async def process_file_delivery(client, message, user_id, file_code):
     now = datetime.now(timezone.utc)
-    
     user_data = get_fresh_user(user_id)
     
     file_data = files_col.find_one({"file_code": file_code})
@@ -206,7 +202,6 @@ async def process_file_delivery(client, message, user_id, file_code):
         verify_url = generate_vplink(f"https://t.me/{bot_username}?start=verify_{file_code}")
         return await message.reply(
             f"🛑 **Daily Free Limit Reached!**\n\n"
-            f"You have used your **{FREE_DAILY_LIMIT} free** video today.\n\n"
             f"✅ **Verify once** to get **{VERIFICATION_HOURS} hours** unlimited access!",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Verify Now (Free)", url=verify_url)],
@@ -214,54 +209,58 @@ async def process_file_delivery(client, message, user_id, file_code):
             ])
         )
 
-    # 🔥 DUAL CHANNEL: Try primary first, then backup
+    # 🔥 SMART DELIVERY: Try ALL possible channels
     delivered = False
+    msg = None
     
-    # Try 1: Use stored channel_id and message_id
-    try:
-        channel_id = file_data.get("channel_id", CHANNEL_PRIMARY)
-        message_id = file_data.get("message_id")
-        
-        msg = await client.copy_message(
-            chat_id=user_id,
-            from_chat_id=channel_id,
-            message_id=message_id,
-            caption=f"📁 **Here is your file!**\n\n⚠️ Will auto-delete in **{AUTO_DELETE_HOURS} hours**.\n💾 Save/Download it quickly!",
-            protect_content=True
-        )
-        delivered = True
-    except Exception as e:
-        print(f"Primary delivery failed: {e}")
+    # Build list of all possible (channel_id, message_id) combinations
+    attempts = []
     
-    # Try 2: If primary failed, try backup channel message_id
-    if not delivered and file_data.get("message_id_backup"):
+    # Attempt 1: Stored channel_id + message_id (original)
+    if file_data.get("channel_id") and file_data.get("message_id"):
+        attempts.append((file_data["channel_id"], file_data["message_id"]))
+    
+    # Attempt 2: Primary channel message_id
+    if file_data.get("message_id_primary"):
+        attempts.append((CHANNEL_PRIMARY, file_data["message_id_primary"]))
+    
+    # Attempt 3: Backup channel message_id
+    if file_data.get("message_id_backup"):
+        attempts.append((CHANNEL_BACKUP, file_data["message_id_backup"]))
+    
+    # Attempt 4: Try message_id on ALL channels (last resort)
+    if file_data.get("message_id"):
+        for ch in ALL_CHANNELS:
+            pair = (ch, file_data["message_id"])
+            if pair not in attempts:
+                attempts.append(pair)
+    
+    # 🔥 Try each attempt until one works
+    for channel_id, message_id in attempts:
         try:
             msg = await client.copy_message(
                 chat_id=user_id,
-                from_chat_id=CHANNEL_BACKUP,
-                message_id=file_data["message_id_backup"],
+                from_chat_id=channel_id,
+                message_id=message_id,
                 caption=f"📁 **Here is your file!**\n\n⚠️ Will auto-delete in **{AUTO_DELETE_HOURS} hours**.\n💾 Save/Download it quickly!",
                 protect_content=True
             )
             delivered = True
-        except Exception as e:
-            print(f"Backup delivery failed: {e}")
-    
-    # Try 3: If backup also failed, try primary channel message_id
-    if not delivered and file_data.get("message_id_primary"):
-        try:
-            msg = await client.copy_message(
-                chat_id=user_id,
-                from_chat_id=CHANNEL_PRIMARY,
-                message_id=file_data["message_id_primary"],
-                caption=f"📁 **Here is your file!**\n\n⚠️ Will auto-delete in **{AUTO_DELETE_HOURS} hours**.\n💾 Save/Download it quickly!",
-                protect_content=True
+            
+            # 🔥 Update DB with working channel for future
+            files_col.update_one(
+                {"file_code": file_code},
+                {"$set": {"channel_id": channel_id, "message_id": message_id}}
             )
-            delivered = True
+            
+            print(f"✅ Delivered {file_code} from channel {channel_id}")
+            break
+            
         except Exception as e:
-            print(f"All delivery attempts failed: {e}")
+            print(f"⚠️ Failed channel {channel_id} msg {message_id}: {e}")
+            continue
     
-    if delivered:
+    if delivered and msg:
         files_col.update_one({"file_code": file_code}, {"$inc": {"clicks": 1}})
         stats_col.update_one({"_id": "bot_stats"}, {"$inc": {"total_clicks": 1}})
         users_col.update_one(
@@ -278,10 +277,16 @@ async def process_file_delivery(client, message, user_id, file_code):
         if verified:
             await message.reply("✅ **Verified User** - Unlimited access active!")
     else:
+        bot_username = (await client.get_me()).username
         await message.reply(
-            "❌ **Error delivering file.**\n\nPlease try again later.",
+            "❌ **File not found in any channel.**\n\n"
+            "Possible reasons:\n"
+            "• File was deleted from channel\n"
+            "• Bot is not admin in channel\n\n"
+            "Please contact admin.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Try Again", url=f"https://t.me/{(await client.get_me()).username}?start={file_code}")]
+                [InlineKeyboardButton("🔄 Try Again", url=f"https://t.me/{bot_username}?start={file_code}")],
+                [InlineKeyboardButton("❓ Get Help", url=HELP_CHANNEL)]
             ])
         )
 
@@ -290,9 +295,8 @@ async def process_file_delivery(client, message, user_id, file_code):
 # ==========================================
 if __name__ == "__main__":
     app.start()
-    print(f"🚀 User Bot ({BOT_MODE.upper()}) Started Successfully!")
-    print(f"📡 Primary Channel: {CHANNEL_PRIMARY}")
-    print(f"📡 Backup Channel: {CHANNEL_BACKUP}")
+    print(f"🚀 User Bot ({BOT_MODE.upper()}) Started!")
+    print(f"📡 Will search files in: {ALL_CHANNELS}")
     loop = asyncio.get_event_loop()
     loop.create_task(persistent_auto_delete_loop())
     idle()
